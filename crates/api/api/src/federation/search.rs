@@ -51,7 +51,6 @@ pub async fn search(
   let show_nsfw = data.show_nsfw;
   let page_cursors = from_single_cursor(data.page_cursor.clone(), search_type);
   let limit = data.limit;
-
   let community_id = resolve_community_identifier(
     &data.community_name,
     data.community_id,
@@ -109,6 +108,7 @@ pub async fn search(
     local_user,
     listing_type: Some(PersonListingType::All),
     sort: Some(PersonSortType::New),
+    community_id: community_id,
     page_cursor: page_cursors[2].clone(),
     limit,
   }

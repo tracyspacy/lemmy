@@ -12,6 +12,7 @@ use lemmy_db_schema::{
   PersonListingType,
   PersonSortType,
   impls::local_user::LocalUserOptionHelper,
+  newtypes::CommunityId,
   source::{
     local_user::LocalUser,
     person::{Person, person_keys as key},
@@ -20,14 +21,16 @@ use lemmy_db_schema::{
   utils::limit_fetch,
 };
 use lemmy_db_schema_file::{
+  CommunityId0,
   InstanceId,
   PersonId,
   joins::{
     creator_home_instance_actions_join,
     creator_local_instance_actions_join,
     my_person_actions_join,
+    person_community_actions_join,
   },
-  schema::{local_user, person},
+  schema::{community_actions, local_user, person},
 };
 use lemmy_diesel_utils::{
   connection::{DbPool, get_conn},
@@ -60,16 +63,28 @@ impl PaginationCursorConversion for PersonView {
 
 impl PersonView {
   #[diesel::dsl::auto_type(no_type_alias)]
-  fn joins(my_person_id: Option<PersonId>, local_instance_id: InstanceId) -> _ {
+  fn joins(
+    my_person_id: Option<PersonId>,
+    local_instance_id: InstanceId,
+    community_id: Option<CommunityId>,
+  ) -> _ {
     let creator_local_instance_actions_join: creator_local_instance_actions_join =
       creator_local_instance_actions_join(local_instance_id);
     let my_person_actions_join: my_person_actions_join = my_person_actions_join(my_person_id);
+    // bc of 2 communityId types in db_schema and db_schema_file
+    let person_community_actions_join: person_community_actions_join =
+      if let Some(cid) = community_id {
+        person_community_actions_join(Some(CommunityId0(cid.0)))
+      } else {
+        person_community_actions_join(None)
+      };
 
     person::table
       .left_join(local_user::table)
       .left_join(my_person_actions_join)
       .left_join(creator_home_instance_actions_join())
       .left_join(creator_local_instance_actions_join)
+      .left_join(person_community_actions_join)
   }
 
   pub async fn read(
@@ -80,7 +95,8 @@ impl PersonView {
     is_admin: bool,
   ) -> LemmyResult<Self> {
     let conn = &mut get_conn(pool).await?;
-    let mut query = Self::joins(my_person_id, local_instance_id)
+    // none here?
+    let mut query = Self::joins(my_person_id, local_instance_id, None)
       .filter(person::id.eq(person_id))
       .select(Self::as_select())
       .into_boxed();
@@ -101,8 +117,8 @@ impl PersonView {
     pool: &mut DbPool<'_>,
   ) -> LemmyResult<Vec<PersonView>> {
     let conn = &mut get_conn(pool).await?;
-
-    Self::joins(my_person_id, local_instance_id)
+    // none here?
+    Self::joins(my_person_id, local_instance_id, None)
       .filter(person::deleted.eq(false))
       .filter(local_user::admin)
       // Order by admin created date (ie old)
@@ -123,6 +139,7 @@ pub struct PersonQuery<'a> {
   pub listing_type: Option<PersonListingType>,
   pub search_term: Option<String>,
   pub search_title_only: Option<bool>,
+  pub community_id: Option<CommunityId>,
   pub page_cursor: Option<PaginationCursor>,
   pub limit: Option<i64>,
 }
@@ -136,11 +153,20 @@ impl PersonQuery<'_> {
     use PersonSortType::*;
     let limit = limit_fetch(self.limit, None)?;
 
-    let mut query = PersonView::joins(self.local_user.person_id(), site.instance_id)
-      .select(PersonView::as_select())
-      .limit(limit)
-      .filter(person::deleted.eq(false))
-      .into_boxed();
+    let mut query = PersonView::joins(
+      self.local_user.person_id(),
+      site.instance_id,
+      self.community_id,
+    )
+    .select(PersonView::as_select())
+    .limit(limit)
+    .filter(person::deleted.eq(false))
+    .into_boxed();
+
+    if let Some(community_id) = self.community_id {
+      query = query.filter(community_actions::community_id.eq(community_id))
+      //also add some filter like joined time != none?
+    }
 
     if let Some(listing_type) = self.listing_type {
       query = match listing_type {
